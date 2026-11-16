@@ -1,0 +1,53 @@
+# ---------- Secrets & environment ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------- Python (be/) ----------
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# ---------- Node / frontend (fe/) ----------
+node_modules/
+dist/
+dist-ssr/
+*.local
+*.tsbuildinfo
+coverage/
+
+# Playwright (end-to-end tests)
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# ---------- Database ----------
+backups/
+*.dump
+*.sql.gz
+
+# ---------- Logs ----------
+*.log
+logs/
+
+# ---------- Editors & tools ----------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.sw?
+.claude/settings.local.json
+
+# ---------- OS ----------
+.DS_Store
+._*
+Thumbs.db

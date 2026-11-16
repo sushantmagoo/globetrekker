@@ -23,7 +23,8 @@
 6. [Infrastructure and deployment](#6-infrastructure-and-deployment)
 7. [Security](#7-security)
 8. [Testing and quality](#8-testing-and-quality)
-9. [Roadmap](#9-roadmap)
+9. [Implementation status](#9-implementation-status-as-of-15-nov-2026)
+10. [Roadmap](#10-roadmap-post-mvp)
 
 ---
 
@@ -35,7 +36,7 @@
 - **Admin**: moderation (hide content, suspend users) through admin-only API endpoints.
 
 ### 1.2 MVP features
-1. **Accounts**: sign up with email and password, email verification, log in and out, forgot and reset password.
+1. **Accounts**: sign up with email and password, log in and out, change password. The app sends no email in the MVP, so there is no email verification and no "forgot password" flow (see the roadmap, §10).
 2. **Journal editor** (the core feature):
    - Title and optional subtitle.
    - Rich text: H2 and H3 headings, bold, italic, underline, strike, highlight, links, lists, blockquote,
@@ -110,8 +111,6 @@
 | `/`                               | Home feed (member) or Explore (visitor)   | any     |
 | `/explore`                        | Explore and search                        | any     |
 | `/login`, `/signup`               | Auth                                      | guest   |
-| `/verify-email`                   | Email verification                        | any     |
-| `/forgot-password`, `/reset-password` | Password recovery                     | guest   |
 | `/write`                          | Creates a draft, then redirects to the editor | member |
 | `/write/:id`                      | Editor (by journal id, which stays stable while the draft's slug follows its title) | owner |
 | `/j/:slug`                        | Journal reader                            | per visibility |
@@ -196,8 +195,7 @@ npm scripts: `dev`, `build`, `preview`, `lint`, `typecheck`, `test`.
 | Auth             | `PyJWT`, `pwdlib[argon2]` (Argon2id)                       |
 | HTML sanitising  | `nh3` (strict allowlist; no `<img>`)                      |
 | Rate limiting    | `slowapi` with in-memory storage (see §4.4)               |
-| Email            | SMTP (`aiosmtplib`), Jinja2 templates; Mailpit locally    |
-| Background work  | FastAPI `BackgroundTasks` (emails); scheduled jobs via a CLI entrypoint (§4.9) |
+| Background work  | Scheduled jobs via a CLI entrypoint (§4.9)                |
 | Observability    | `structlog` JSON logs, request IDs, optional Sentry, Prometheus `/metrics` |
 | Tests            | pytest, pytest-asyncio, httpx `AsyncClient`, testcontainers (Postgres) |
 | Lint and types   | Ruff (lint and format), mypy (strict on `app/`)           |
@@ -218,7 +216,6 @@ be/
 │   ├── api/v1/                 # routers: auth, users, journals, trips, social, feed, search, notifications, og, admin
 │   ├── services/               # business logic (routers stay thin)
 │   ├── content/                # ProseMirror JSON → HTML/text, sanitiser, excerpt, reading time
-│   ├── email/                  # sender + templates
 │   └── jobs/                   # scheduled maintenance (python -m app.jobs <name>)
 └── tests/
 ```
@@ -236,7 +233,6 @@ Layering: **router → service → repository/ORM**. Routers handle HTTP only; s
 | `REFRESH_TOKEN_TTL_DAYS`  | `30`                                                         |
 | `PUBLIC_APP_URL`          | `https://globetrekker.me`                                    |
 | `CORS_ORIGINS`            | Empty in prod (same origin), `http://localhost:5173` locally |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM` | `no-reply@globetrekker.me` |
 | `WEB_CONCURRENCY`         | uvicorn worker count in prod (default `4`)                   |
 | `SENTRY_DSN`              | optional                                                     |
 
@@ -246,10 +242,9 @@ Layering: **router → service → repository/ORM**. Routers handle HTTP only; s
 - **Refresh token**: 256 random bits, stored **hashed** in `refresh_tokens`, sent as cookie
   `gt_refresh` (`HttpOnly; Secure; SameSite=Lax; Path=/api/v1/auth`). Tokens **rotate on every use**.
   Reusing a rotated token revokes the whole token family (theft detection).
-- Email verification and password reset use single-use, hashed, expiring tokens (`email_tokens`, 24 h and 1 h respectively).
-- Unverified users can write drafts but cannot publish or comment.
+- No email is sent in the MVP: accounts are usable (publish, comment) right after sign-up, and there is no password reset by email. Signed-in users can change their password in Settings.
 - **Rate limits** (`slowapi`, in-memory, keyed on the client IP from `X-Forwarded-For` set by Caddy):
-  login 5/min per IP+email, sign-up 3/h per IP, password reset 3/h per email, writes 60/min per user.
+  login 10/min per IP, sign-up 3/h per IP.
   Counters are per worker process, so the effective limit is up to `WEB_CONCURRENCY` times the
   configured value. This is acceptable for MVP.
   Brute-force protection on login does not depend on these counters: it is enforced in Postgres via
@@ -266,14 +261,10 @@ Conventions:
 **Auth**
 | Method | Path                            | Description                       |
 | ------ | ------------------------------- | --------------------------------- |
-| POST   | `/auth/signup`                  | Create account and send verification email |
+| POST   | `/auth/signup`                  | Create account; returns access token and sets refresh cookie |
 | POST   | `/auth/login`                   | Returns access token and sets refresh cookie |
 | POST   | `/auth/refresh`                 | Rotate refresh token and return a new access token |
 | POST   | `/auth/logout`                  | Revoke the current refresh family |
-| POST   | `/auth/verify-email`            | `{ token }`                       |
-| POST   | `/auth/resend-verification`     |                                   |
-| POST   | `/auth/forgot-password`         | Always returns 202 (prevents account enumeration) |
-| POST   | `/auth/reset-password`          | `{ token, new_password }`         |
 
 **Users and profiles**
 | Method | Path                                   | Description                 |
@@ -367,7 +358,7 @@ Repeated likes on the same journal within an hour are coalesced. Clients poll ev
 Jobs are run as `python -m app.jobs <name>`. In prod they are triggered by host cron, for example
 `docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm backend python -m app.jobs nightly`.
 - `nightly`: recompute denormalised counters, purge accounts soft-deleted more than 30 days ago,
-  and delete expired `refresh_tokens` and `email_tokens`.
+  and delete expired `refresh_tokens`.
 
 ---
 
@@ -395,7 +386,6 @@ Jobs are run as `python -m app.jobs <name>`. In prod they are triggered by host 
 - `visibility`: `public`, `followers`, `unlisted`, `private`
 - `notification_type`: `follow`, `like`, `comment`, `reply`
 - `report_target`: `journal`, `comment`, `user`
-- `email_token_purpose`: `verify_email`, `reset_password`
 
 ### 5.3 Tables
 
@@ -404,7 +394,6 @@ Jobs are run as `python -m app.jobs <name>`. In prod they are triggered by host 
 | ------------------- | --------------- | -------------------------------------- |
 | id                  | uuid PK         |                                        |
 | email               | citext          | unique                                 |
-| email_verified_at   | timestamptz     | null until verified                    |
 | password_hash       | text            | Argon2id                               |
 | failed_login_count  | int             | default 0                              |
 | locked_until        | timestamptz     | login lockout                          |
@@ -422,8 +411,6 @@ Jobs are run as `python -m app.jobs <name>`. In prod they are triggered by host 
 
 **refresh_tokens**: `id`, `user_id` FK, `family_id` uuid, `token_hash` (unique, SHA-256), `expires_at`,
 `revoked_at`, `replaced_by_id` FK self, `user_agent`, `ip` inet, `created_at`. Index on `(user_id)` and `(family_id)`.
-
-**email_tokens**: `id`, `user_id` FK, `purpose` email_token_purpose, `token_hash` unique, `expires_at`, `used_at`, `created_at`.
 
 **trips**: `id`, `owner_id` FK, `title` varchar(120), `slug` (unique per owner), `description`,
 `start_date`, `end_date` date, `visibility`, `created_at`, `updated_at`.
@@ -500,7 +487,6 @@ erDiagram
     comments ||--o{ comments : replies
     users ||--o{ notifications : receives
     users ||--o{ refresh_tokens : holds
-    users ||--o{ email_tokens : holds
 ```
 
 ### 5.6 Operations
@@ -521,7 +507,7 @@ erDiagram
 ```
 .
 ├── docker-compose.yml           # base: service definitions shared by every environment
-├── docker-compose.override.yml  # local dev (auto-loaded): hot reload, ports, Mailpit
+├── docker-compose.override.yml  # local dev (auto-loaded): hot reload, ports
 ├── docker-compose.prod.yml      # prod: built images, Caddy + TLS, restart policies
 ├── Caddyfile                    # prod edge config for globetrekker.me
 ├── .env.example                 # copy to .env
@@ -538,7 +524,6 @@ erDiagram
 | `migrate`  | `alembic upgrade head` (one-off)        | same, runs before `backend`                  |
 | `backend`  | `uvicorn --reload`, source bind-mounted, :8000 | `uvicorn --workers N`, non-root, healthcheck |
 | `frontend` | Vite dev server :5173 with HMR          | nginx serving `dist/`                         |
-| `mailpit`  | SMTP sink, UI at :8025                  | — (real SMTP provider)                       |
 | `caddy`    | —                                       | :80/:443, automatic Let's Encrypt certificates |
 
 ### 6.3 Commands
@@ -547,7 +532,7 @@ erDiagram
 cp .env.example .env                 # fill in secrets
 
 # Local
-docker compose up --build            # http://localhost:5173 (app), :8000/api/docs, :8025 (mail)
+docker compose up --build            # http://localhost:5173 (app), :8000/api/docs
 docker compose run --rm migrate      # run migrations again after adding one
 docker compose exec backend uv run alembic revision --autogenerate -m "msg"
 
@@ -559,7 +544,6 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f backend
 ### 6.4 DNS (prod)
 - `A`/`AAAA` records for `globetrekker.me` and `www.globetrekker.me` pointing to the server.
 - `www` redirects to the apex domain. Caddy obtains and renews certificates automatically (ports 80 and 443 must be open).
-- Email: set SPF, DKIM, and DMARC for `globetrekker.me` with the chosen SMTP provider.
 
 ### 6.5 CI/CD (recommended)
 GitHub Actions:
@@ -592,9 +576,9 @@ GitHub Actions:
 
 **Done and tested**
 - Backend: config, Problem Details errors, structured logs, rate limiting, and the full schema with its first Alembic migration.
-- Backend endpoints: auth (sign-up, login, refresh rotation with reuse detection, logout, email verification, password reset, lockout), `/me`, profiles, follows, journals (draft, autosave `PATCH` with versioning, publish, unpublish, share token, delete), likes, bookmarks, comments with replies, home and Explore feeds (recent, trending, tag and country filters), notifications, the Open Graph endpoint, and health and readiness checks.
+- Backend endpoints: auth (sign-up, login, refresh rotation with reuse detection, logout, lockout), `/me`, profiles, follows, journals (draft, autosave `PATCH` with versioning, publish, unpublish, share token, delete), likes, bookmarks, comments with replies, home and Explore feeds (recent, trending, tag and country filters), notifications, the Open Graph endpoint, and health and readiness checks.
 - Backend tests: 45 pytest tests against real Postgres 18 (testcontainers).
-- Frontend: layout (desktop header and mobile tab bar), sign-up, login, verify and reset pages, the TipTap editor (toolbar, bubble menu, video embeds, autosave with offline retry, conflict detection and local recovery, location picker, dates, tags, visibility, preview, publish), the reader (map, likes, bookmarks, share modal, comments), Home, Explore, profile, follow lists, drafts, bookmarks, notifications, settings, and light and dark themes.
+- Frontend: layout (desktop header and mobile tab bar), sign-up and login pages, the TipTap editor (toolbar, bubble menu, video embeds, autosave with offline retry, conflict detection and local recovery, location picker, dates, tags, visibility, preview, publish), the reader (map, likes, bookmarks, share modal, comments), Home, Explore, profile, follow lists, drafts, bookmarks, notifications, settings, and light and dark themes.
 - Frontend tests: 16 Vitest tests.
 - Docker: local stack (`docker compose up`) and production images build and run.
 
@@ -607,8 +591,9 @@ GitHub Actions:
 
 ## 10. Roadmap (post-MVP)
 1. Google and Apple sign-in (OAuth), magic links.
-2. Real-time notifications (SSE), email digests.
-3. Interactive trip maps with routes, and PostGIS for "journals near me".
-4. Revision history for journals, and collaborative trips (co-authors).
-5. PWA with offline drafts, then native apps.
-6. Moderation dashboard, ML-assisted spam detection.
+2. Email: verification, password reset by email, and notification digests (needs an SMTP provider plus SPF, DKIM and DMARC for `globetrekker.me`).
+3. Real-time notifications (SSE).
+4. Interactive trip maps with routes, and PostGIS for "journals near me".
+5. Revision history for journals, and collaborative trips (co-authors).
+6. PWA with offline drafts, then native apps.
+7. Moderation dashboard, ML-assisted spam detection.
