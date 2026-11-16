@@ -1,6 +1,6 @@
 from httpx import AsyncClient
 
-from tests.conftest import PASSWORD, UserFactory, new_client
+from tests.integration.conftest import PASSWORD, UserFactory, new_client
 
 SIGNUP = {
     "email": "ana@example.com",

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
 
     public_app_url: str = "http://localhost:5173"
     cors_origins: str = ""  # comma separated
+    # Turn off only for automated test stacks (e2e), never in production.
+    rate_limit_enabled: bool = True
 
     sentry_dsn: str = ""
 

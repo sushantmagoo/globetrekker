@@ -31,19 +31,37 @@ cd be && uv sync && uv run alembic upgrade head && uv run uvicorn app.main:app -
 cd fe && npm install && npm run dev
 ```
 
-## Checks
+## Tests and checks
 
 ```bash
-cd be && uv run pytest && uv run ruff check . && uv run mypy      # tests start a throwaway Postgres via Docker
-cd fe && npm test && npm run lint && npm run typecheck && npm run build
+make test               # frontend + backend unit tests (no Docker)
+make test-integration   # API + real Postgres 18 (throwaway container)
+make e2e-install        # once: Playwright + Chromium
+make e2e                # start the stack (rate limits off) and run Playwright
+make lint               # ruff, mypy, oxlint, tsc, cfn-lint, actionlint, shellcheck
+make help               # everything else
 ```
+
+Strategy and coverage: [`_docs/testing.md`](_docs/testing.md).
 
 New migration: `cd be && uv run alembic revision --autogenerate -m "describe change"`
 
-## Production
+## Deployment (AWS)
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-```
+- **Infrastructure** (VPC, EC2, ECR, IAM) is created and updated by GitHub Actions (`.github/workflows/infra.yml`) from `infra/cloudformation/app.yaml`.
+- **Releases** go out from `.github/workflows/ci-cd.yml`: every merge to `main` that passes all tests is built, pushed to ECR and deployed to EC2 over SSM, with an automatic rollback if the new release isn't healthy.
+- **AWS login** uses OIDC, so no AWS keys are stored in GitHub.
 
-This needs `POSTGRES_PASSWORD`, `JWT_SECRET` and `ACME_EMAIL` set in `.env`, plus DNS for `globetrekker.me` and `www.globetrekker.me`. Caddy obtains the TLS certificates.
+- [`_docs/deployment.md`](_docs/deployment.md): architecture, security model, one-time setup.
+- [`_docs/release-process.md`](_docs/release-process.md): shipping, migrations, failures, rollbacks.
+
+## Docs
+
+| Doc | What |
+| --- | --- |
+| [`_docs/spec.md`](_docs/spec.md) | Product and technical spec |
+| [`_docs/tasks.md`](_docs/tasks.md) | Improvement backlog (mirrored as GitHub issues) |
+| [`_docs/testing.md`](_docs/testing.md) | Test strategy: unit, integration, e2e |
+| [`_docs/deployment.md`](_docs/deployment.md) | AWS deployment and infrastructure |
+| [`_docs/release-process.md`](_docs/release-process.md) | How changes ship and roll back |
+| [`_docs/pm.md`](_docs/pm.md), [`se.md`](_docs/se.md), [`qa.md`](_docs/qa.md) | Team roles |

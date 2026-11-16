@@ -13,6 +13,7 @@ x-backend-env: &backend-env
   REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
   PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:5173}
   CORS_ORIGINS: ${CORS_ORIGINS:-}
+  RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}  # e2e runs set this to false
   SENTRY_DSN: ${SENTRY_DSN:-}
 
 services:

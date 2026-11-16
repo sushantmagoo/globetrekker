@@ -1,0 +1,300 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Globetrekker app environment: VPC + public subnet, one EC2 instance running the production
+  Docker Compose stack (Caddy, frontend, backend, Postgres), an Elastic IP, a separate encrypted
+  EBS volume for data, ECR repositories for the images, and a private bucket for release bundles.
+  Created and updated by .github/workflows/infra.yml. Needs CAPABILITY_NAMED_IAM.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: globetrekker
+    AllowedPattern: ^[a-z][a-z0-9-]{2,20}$
+    Description: Must match the bootstrap stack's ProjectName.
+  EnvironmentName:
+    Type: String
+    Default: prod
+    AllowedValues: [prod]
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.micro, t3.small, t3.medium, t3.large]
+    Description: t3.small (2 GB) is comfortable for Postgres + API + Caddy; images are built in CI, not on the box.
+  DataVolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 10
+    MaxValue: 500
+    Description: GiB for Docker data (Postgres volume, images). Survives instance replacement.
+  VpcCidr:
+    Type: String
+    Default: 10.40.0.0/16
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.40.1.0/24
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  ComposeVersion:
+    Type: String
+    Default: v2.29.7
+    Description: Docker Compose plugin release installed on the instance.
+
+Resources:
+  # ---------- Network ----------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub '${ProjectName}-vpc' }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub '${ProjectName}-igw' }]
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub '${ProjectName}-public' }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub '${ProjectName}-public' }]
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Globetrekker web traffic only (HTTP/HTTPS/HTTP3). No SSH - use SSM Session Manager.
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: 'HTTP: ACME challenge and redirect to HTTPS' }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS }
+        - { IpProtocol: udp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTP/3 }
+      SecurityGroupEgress:
+        - { IpProtocol: -1, CidrIp: 0.0.0.0/0, Description: 'Outbound: image pulls, ACME, OS updates' }
+      Tags: [{ Key: Name, Value: !Sub '${ProjectName}-web' }]
+
+  # ---------- Container images & release bundles ----------
+  BackendRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Sub ${ProjectName}-backend
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"Keep the 30 most recent images",
+            "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":30},
+            "action":{"type":"expire"}}]}
+
+  FrontendRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Sub ${ProjectName}-frontend
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"Keep the 30 most recent images",
+            "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":30},
+            "action":{"type":"expire"}}]}
+
+  # Deploy artifacts only (compose files + Caddyfile per release). No user content lives here.
+  ReleaseBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${ProjectName}-releases-${AWS::AccountId}-${AWS::Region}
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-releases
+            Status: Enabled
+            Prefix: releases/
+            ExpirationInDays: 180
+
+  # ---------- Instance identity ----------
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-instance-role
+      PermissionsBoundary: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${ProjectName}-instance-boundary
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: run-globetrekker
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadAppSecrets
+                Effect: Allow
+                Action: [ssm:GetParameters, ssm:GetParametersByPath]
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${EnvironmentName}
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${EnvironmentName}/*
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: PullImages
+                Effect: Allow
+                Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
+                Resource: [!GetAtt BackendRepository.Arn, !GetAtt FrontendRepository.Arn]
+              - Sid: ReadReleaseBundles
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${ReleaseBucket.Arn}/releases/*
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${ProjectName}-instance-profile
+      Roles: [!Ref InstanceRole]
+
+  # ---------- Compute & storage ----------
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !GetAtt PublicSubnet.AvailabilityZone
+      Size: !Ref DataVolumeSize
+      VolumeType: gp3
+      Encrypted: true
+      Tags: [{ Key: Name, Value: !Sub '${ProjectName}-data' }]
+
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds: [!Ref WebSecurityGroup]
+      IamInstanceProfile: !Ref InstanceProfile
+      MetadataOptions:
+        HttpTokens: required # IMDSv2 only
+        HttpPutResponseHopLimit: 2 # containers may need instance metadata
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeSize: 20, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+      Tags: [{ Key: Name, Value: !Sub '${ProjectName}-app' }]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # First-boot setup: Docker, the data volume and the app directory. Releases are
+          # delivered later by CI (deploy/remote-deploy.sh via SSM), never by this script.
+          set -euxo pipefail
+          exec > >(tee /var/log/user-data.log) 2>&1
+
+          fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+          echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+          dnf update -y
+          dnf install -y docker xfsprogs
+
+          # The data volume is attached after launch; wait for it, format once, mount at /data.
+          VOLUME_ID="${DataVolume}"
+          DEVICE="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${!VOLUME_ID//-/}"
+          for _ in $(seq 1 60); do [ -e "$DEVICE" ] && break; sleep 5; done
+          blkid "$DEVICE" || mkfs.xfs "$DEVICE"
+          mkdir -p /data
+          echo "$DEVICE /data xfs defaults,nofail 0 2" >> /etc/fstab
+          mount -a
+
+          # Keep Docker's data (Postgres volume included) on the persistent volume.
+          mkdir -p /etc/docker /data/docker
+          cat > /etc/docker/daemon.json <<'JSON'
+          {"data-root": "/data/docker", "log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}}
+          JSON
+          systemctl enable --now docker
+
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -fsSL "https://github.com/docker/compose/releases/download/${ComposeVersion}/docker-compose-linux-$(uname -m)" \
+            -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+          mkdir -p /opt/globetrekker/releases
+          chmod 700 /opt/globetrekker
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref AppInstance
+      VolumeId: !Ref DataVolume
+      Device: /dev/sdf
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags: [{ Key: Name, Value: !Sub '${ProjectName}-app' }]
+
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref AppInstance
+
+Outputs:
+  InstanceId:
+    Value: !Ref AppInstance
+  PublicIp:
+    Description: Point A records for the domain (and www) at this address.
+    Value: !Ref ElasticIp
+  EcrRegistry:
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+  ReleaseBucket:
+    Value: !Ref ReleaseBucket
+  SsmPrefix:
+    Description: Parameter Store path the instance reads secrets from.
+    Value: !Sub /${ProjectName}/${EnvironmentName}

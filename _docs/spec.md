@@ -23,7 +23,7 @@
 6. [Infrastructure and deployment](#6-infrastructure-and-deployment)
 7. [Security](#7-security)
 8. [Testing and quality](#8-testing-and-quality)
-9. [Implementation status](#9-implementation-status-as-of-15-nov-2026)
+9. [Implementation status](#9-implementation-status-as-of-17-nov-2026)
 10. [Roadmap](#10-roadmap-post-mvp)
 
 ---
@@ -508,12 +508,17 @@ erDiagram
 .
 ├── docker-compose.yml           # base: service definitions shared by every environment
 ├── docker-compose.override.yml  # local dev (auto-loaded): hot reload, ports
-├── docker-compose.prod.yml      # prod: built images, Caddy + TLS, restart policies
+├── docker-compose.prod.yml      # prod: Caddy + TLS, restart policies; images from BACKEND_IMAGE/FRONTEND_IMAGE
 ├── Caddyfile                    # prod edge config for globetrekker.me
 ├── .env.example                 # copy to .env
+├── Makefile                     # make test / test-integration / e2e / lint …
 ├── fe/Dockerfile                # targets: dev (Vite) and prod (nginx static)
 ├── fe/nginx.conf
-└── be/Dockerfile                # targets: dev (uvicorn --reload) and prod (multi-worker, non-root)
+├── be/Dockerfile                # targets: dev (uvicorn --reload) and prod (multi-worker, non-root)
+├── e2e/                         # Playwright end-to-end tests
+├── deploy/remote-deploy.sh      # runs on EC2 for each release (via SSM)
+├── infra/cloudformation/        # bootstrap.yaml (OIDC roles, once) + app.yaml (AWS environment)
+└── .github/workflows/           # ci-cd.yml (test → build → deploy) + infra.yml (create/update AWS)
 ```
 
 ### 6.2 Services
@@ -536,20 +541,26 @@ docker compose up --build            # http://localhost:5173 (app), :8000/api/do
 docker compose run --rm migrate      # run migrations again after adding one
 docker compose exec backend uv run alembic revision --autogenerate -m "msg"
 
-# Production (on the server)
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f backend
+# Production images, built locally (CI builds and ships them for real, see §6.5)
+make build-prod
 ```
 
 ### 6.4 DNS (prod)
 - `A`/`AAAA` records for `globetrekker.me` and `www.globetrekker.me` pointing to the server.
 - `www` redirects to the apex domain. Caddy obtains and renews certificates automatically (ports 80 and 443 must be open).
 
-### 6.5 CI/CD (recommended)
-GitHub Actions:
-1. Lint, typecheck, and test both apps, with backend tests running against a Postgres service container.
-2. Build images and push them to GHCR.
-3. On the server, `docker compose pull && up -d`. Migrations run automatically through `migrate`.
+### 6.5 CI/CD and hosting (AWS)
+Production runs on a single EC2 instance in its own VPC, with the Docker Compose stack, an Elastic IP and an encrypted data volume.
+- **Infrastructure:** created and updated by **`infra.yml`** (CloudFormation `app.yaml`).
+- **Releases:** shipped by **`ci-cd.yml`**:
+  1. lint, unit, integration and e2e tests;
+  2. build the images and push them to ECR, tagged with the commit SHA;
+  3. upload the release bundle to S3;
+  4. deploy over SSM Run Command, with a health check and automatic rollback.
+- **AWS login:** GitHub uses OIDC, so there are no stored AWS keys.
+- **Secrets:** kept in SSM Parameter Store.
+
+Details: [`deployment.md`](deployment.md), [`release-process.md`](release-process.md).
 
 ---
 
@@ -566,28 +577,29 @@ GitHub Actions:
 - Dependency scanning with Dependabot, `npm audit`, and `pip-audit`.
 
 ## 8. Testing and quality
-- **Backend**: unit tests for services and content rendering and sanitisation. API tests use httpx against a
-  real Postgres (testcontainers), with every test running in a transaction that is rolled back. Coverage target ≥ 80%.
-- **Frontend**: component tests for the editor, autosave, auth refresh, and share modal.
-- **E2E (Playwright)**: sign up → write a journal → publish → open the share link logged out → like and comment from a second account.
-- Pre-commit hooks: Ruff, mypy, oxlint.
+Four layers, all run in CI on every PR. Full strategy: [`testing.md`](testing.md).
+- **Frontend unit** (Vitest): API client, autosave state machine, sanitising, URL and format helpers.
+- **Backend unit** (pytest, no database): content rendering and sanitising, slugs, cursors, tokens, validation.
+- **Integration** (pytest + httpx + real Postgres 18): every endpoint, the visibility matrix, auth flows and migrations. Tables are truncated between tests.
+- **End-to-end** (Playwright against the Docker stack): sign up, write → autosave → publish, share links, follow, like, comment and notifications.
+- Linters: Ruff, mypy, oxlint, tsc, cfn-lint, actionlint and shellcheck (`make lint`).
 
-## 9. Implementation status (as of 15 Nov 2026)
+## 9. Implementation status (as of 17 Nov 2026)
 
 **Done and tested**
 - Backend: config, Problem Details errors, structured logs, rate limiting, and the full schema with its first Alembic migration.
 - Backend endpoints: auth (sign-up, login, refresh rotation with reuse detection, logout, lockout), `/me`, profiles, follows, journals (draft, autosave `PATCH` with versioning, publish, unpublish, share token, delete), likes, bookmarks, comments with replies, home and Explore feeds (recent, trending, tag and country filters), notifications, the Open Graph endpoint, and health and readiness checks.
-- Backend tests: 45 pytest tests against real Postgres 18 (testcontainers).
+- Backend tests: 34 unit and 28 integration tests (real Postgres 18, including a migration check).
 - Frontend: layout (desktop header and mobile tab bar), sign-up and login pages, the TipTap editor (toolbar, bubble menu, video embeds, autosave with offline retry, conflict detection and local recovery, location picker, dates, tags, visibility, preview, publish), the reader (map, likes, bookmarks, share modal, comments), Home, Explore, profile, follow lists, drafts, bookmarks, notifications, settings, and light and dark themes.
-- Frontend tests: 16 Vitest tests.
+- Frontend tests: 29 Vitest tests. End-to-end: 14 Playwright tests against the Docker stack.
 - Docker: local stack (`docker compose up`) and production images build and run.
+- CI/CD and AWS: `ci-cd.yml` and `infra.yml`, CloudFormation templates, and the EC2 deploy script with automatic rollback. These are linted, and the deploy script was rehearsed locally. **Not yet run against a real AWS account** (needs the one-time bootstrap in `deployment.md`).
 
 **Not built yet** (specified above)
 - Trips (§1.2.7): the table exists; there's no API or UI.
 - Search (`/search`), `/tags/popular`, `/users/{u}/places` (world map), reports and admin moderation, `sitemap.xml`.
 - The `nightly` job (§4.9) and the hard purge of deleted accounts.
 - i18n (§3.1): strings are currently hard-coded in English.
-- Playwright e2e tests and CI.
 
 ## 10. Roadmap (post-MVP)
 1. Google and Apple sign-in (OAuth), magic links.

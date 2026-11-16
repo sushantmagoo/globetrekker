@@ -1,6 +1,6 @@
 from httpx import AsyncClient
 
-from tests.conftest import UserFactory, published_journal
+from tests.integration.conftest import UserFactory, published_journal
 
 
 async def test_follow_counts_and_notification(make_user: UserFactory) -> None:

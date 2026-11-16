@@ -71,12 +71,14 @@ function FollowButton({ profile }: { profile: Profile }) {
       </Button>
     )
   }
+  // Distinct keys: swap in a fresh button when the state flips, rather than animating the
+  // previous button's loading spinner out (which can linger after the request finished).
   return profile.is_following ? (
-    <Button onClick={() => mut.mutate(false)} loading={mut.isPending}>
+    <Button key="following" onClick={() => mut.mutate(false)} loading={mut.isPending}>
       Following
     </Button>
   ) : (
-    <Button type="primary" onClick={() => mut.mutate(true)} loading={mut.isPending}>
+    <Button key="follow" type="primary" onClick={() => mut.mutate(true)} loading={mut.isPending}>
       Follow
     </Button>
   )

@@ -1,6 +1,6 @@
 from httpx import AsyncClient
 
-from tests.conftest import UserFactory, doc, published_journal
+from tests.integration.conftest import UserFactory, doc, published_journal
 
 
 async def test_draft_lifecycle(make_user: UserFactory) -> None:

@@ -8,12 +8,14 @@ services:
       - "5432:5432"
 
   migrate:
+    image: globetrekker-backend:dev
     build:
       target: dev
     volumes:
       - ./be:/app
 
   backend:
+    image: globetrekker-backend:dev
     build:
       target: dev
     environment:
@@ -25,6 +27,7 @@ services:
       - "8000:8000"
 
   frontend:
+    image: globetrekker-frontend:dev
     build:
       target: dev
     environment:

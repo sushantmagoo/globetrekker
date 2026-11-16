@@ -5,12 +5,14 @@ and own the four layers of tests: frontend unit, backend, integration and end-to
 
 ## Test layers
 
-| Layer                 | Tool                                      | Location              | Run with |
-| --------------------- | ----------------------------------------- | --------------------- | -------- |
-| Frontend unit         | Vitest + React Testing Library (jsdom)    | `fe/src/**/*.test.ts(x)` | `cd fe && npm test` |
-| Backend               | pytest + pytest-asyncio                   | `be/tests/`           | `cd be && uv run pytest` |
-| Integration           | pytest + httpx against real Postgres 18 (testcontainers) | `be/tests/test_*.py` (API tests) | `cd be && uv run pytest` |
-| End-to-end            | Playwright against the running Docker stack | `fe/e2e/` (to be added, issue #20) | `cd fe && npx playwright test` |
+| Layer         | Tool                                                      | Location                     | Run with |
+| ------------- | --------------------------------------------------------- | ---------------------------- | -------- |
+| Frontend unit | Vitest + React Testing Library (jsdom)                    | `fe/src/**/*.test.ts(x)`     | `make test-frontend` |
+| Backend unit  | pytest (no database)                                      | `be/tests/unit/`             | `make test-backend` |
+| Integration   | pytest + httpx against a real Postgres 18 (testcontainers locally, a service container in CI) | `be/tests/integration/` | `make test-integration` |
+| End-to-end    | Playwright against the running Docker stack               | `e2e/tests/`                 | `make e2e` |
+
+The full strategy (what each file covers, design notes, gaps) is in [`testing.md`](testing.md). CI runs all four layers on every PR.
 
 **What each layer covers**
 
@@ -22,10 +24,9 @@ and own the four layers of tests: frontend unit, backend, integration and end-to
 ## Workflow for each PR or issue
 
 1. Read the issue's acceptance criteria and the PR description.
-2. Check out the branch and run **all** checks:
+2. Check out the branch and run **all** checks (the same as CI):
    ```bash
-   cd be && uv run ruff check . && uv run mypy && uv run pytest
-   cd fe && npm run lint && npm run typecheck && npm test && npm run build
+   make lint test test-integration e2e
    ```
 3. Add or extend tests at the right layer for each acceptance criterion. Prefer the lowest layer that proves the behaviour. Use end-to-end tests only for full user journeys.
 4. Test manually in the browser on desktop and mobile widths, in light and dark themes, and check the console for errors.

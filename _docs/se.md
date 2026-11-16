@@ -23,13 +23,14 @@ Read `_docs/spec.md` before starting. It describes the API conventions, visibili
    - Schema changes: edit the models, then `cd be && uv run alembic revision --autogenerate -m "…"`. Review the generated migration; migrations must not import app code.
    - Frontend: API calls go in `src/api/endpoints.ts` with types in `src/api/types.ts`; pages live under `src/features/<area>/`.
 4. **Write tests** for what you changed (backend pytest, frontend Vitest). QA adds broader coverage (`qa.md`).
-5. **Run the checks.** All must pass before you open a PR:
+5. **Run the checks.** All must pass before you open a PR; CI runs the same ones (see [`testing.md`](testing.md)):
    ```bash
-   cd be && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest
-   cd fe && npm run lint && npm run typecheck && npm test && npm run build
+   make lint test test-integration   # add `make e2e` for user-facing changes
    ```
 6. **Try it for real.** Run `docker compose up --build` and use the feature at http://localhost:5173.
 7. **Open a PR** that references the issue (`Closes #<n>`), with a short summary and how you tested it.
+   Merging to `main` deploys to production automatically; follow [`release-process.md`](release-process.md)
+   (especially the rules for backward-compatible migrations).
 8. **Update docs** when behaviour changes: `_docs/spec.md` (and its implementation status section) and the README.
 
 ## Conventions

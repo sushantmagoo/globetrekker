@@ -20,7 +20,7 @@ Check items off as they land.
   - [ ] Background job queue (e.g. `arq`) instead of in-process tasks
 - [ ] **Backups.** Nightly `pg_dump` to off-site storage, plus a monthly restore test.
 - [ ] **Monitoring.** Error tracking (Sentry), uptime checks, and basic metrics and dashboards.
-- [ ] **CI/CD.** GitHub Actions to lint, test and build images, then deploy to the server.
+- [x] **CI/CD.** GitHub Actions to lint, test and build images, then deploy to the server. (#6, done: `ci-cd.yml`, `infra.yml`, see `deployment.md`; first real AWS run still pending)
 - [ ] **Connection pooling.** Add PgBouncer once traffic grows.
 
 ## Features
@@ -40,7 +40,7 @@ Check items off as they land.
 ## Maintenance and housekeeping
 
 - [ ] **Nightly job.** Recompute counters, permanently delete accounts that were deleted more than 30 days ago, and clean up expired refresh tokens.
-- [ ] **End-to-end tests** (Playwright) for the main path: sign up → write → publish → share → like and comment.
+- [x] **End-to-end tests** (Playwright) for the main path: sign up → write → publish → share → like and comment. (#20, done: `e2e/`, see `testing.md`)
 - [ ] **Generated API types.** Switch from hand-written `fe/src/api/types.ts` to `openapi-typescript` once it supports TypeScript 7.
 - [ ] **Reliable logout.** Use `fetch(..., { keepalive: true })` so logout still completes if the tab closes right after clicking.
-- [ ] **Separate image names for dev and prod Docker builds**, so the two don't overwrite each other on the same machine.
+- [x] **Separate image names for dev and prod Docker builds**, so the two don't overwrite each other on the same machine. (#23, done: `:dev` / `:prod` tags)
