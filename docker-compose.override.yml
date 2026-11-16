@@ -1,0 +1,38 @@
+# Local development overrides (auto-loaded by `docker compose up`).
+#   App:       http://localhost:5173
+#   API docs:  http://localhost:8000/api/docs
+
+services:
+  db:
+    ports:
+      - "5432:5432"
+
+  migrate:
+    build:
+      target: dev
+    volumes:
+      - ./be:/app
+
+  backend:
+    build:
+      target: dev
+    environment:
+      APP_ENV: local
+      CORS_ORIGINS: http://localhost:5173
+    volumes:
+      - ./be:/app
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      target: dev
+    environment:
+      VITE_API_BASE_URL: /api/v1
+      VITE_PUBLIC_APP_URL: http://localhost:5173
+      VITE_PROXY_TARGET: http://backend:8000
+    volumes:
+      - ./fe:/app
+      - /app/node_modules   # keep the image's node_modules, don't shadow with the host's
+    ports:
+      - "5173:5173"

@@ -1,0 +1,62 @@
+# Globetrekker: base service definitions shared by every environment.
+#   Local: docker compose up --build                (auto-merges docker-compose.override.yml)
+#   Prod:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# No ports are published here; each environment file decides what to expose.
+
+name: globetrekker
+
+x-backend-env: &backend-env
+  APP_ENV: ${APP_ENV:-local}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-globetrekker}:${POSTGRES_PASSWORD:-globetrekker}@db:5432/${POSTGRES_DB:-globetrekker}
+  JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me-please-32b}
+  ACCESS_TOKEN_TTL_MIN: ${ACCESS_TOKEN_TTL_MIN:-15}
+  REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
+  PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:5173}
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-globetrekker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-globetrekker}
+      POSTGRES_DB: ${POSTGRES_DB:-globetrekker}
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/<major>/docker
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-off job: apply Alembic migrations before the API starts.
+  migrate:
+    build:
+      context: ./be
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: ./be
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./fe
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

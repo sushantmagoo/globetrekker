@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /j/
+Allow: /u/
+Disallow: /write
+Disallow: /settings
+Disallow: /me/
+Sitemap: https://globetrekker.me/sitemap.xml

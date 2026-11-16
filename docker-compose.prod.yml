@@ -1,0 +1,59 @@
+# Production overrides for https://globetrekker.me
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Only Caddy publishes ports (80/443). Everything else stays on the internal network.
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  db:
+    <<: *restart
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+  migrate:
+    build:
+      target: prod
+    environment:
+      APP_ENV: production
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+
+  backend:
+    <<: *restart
+    build:
+      target: prod
+    environment:
+      APP_ENV: production
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      PUBLIC_APP_URL: https://globetrekker.me
+      CORS_ORIGINS: ""
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+
+  frontend:
+    <<: *restart
+    build:
+      target: prod
+      args:
+        VITE_API_BASE_URL: /api/v1
+        VITE_PUBLIC_APP_URL: https://globetrekker.me
+
+  caddy:
+    <<: *restart
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  caddy_data:
+  caddy_config:
