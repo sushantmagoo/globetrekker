@@ -1,0 +1,84 @@
+# OpenTelemetry Collector: receives OTLP from the backend and fans the signals out to
+# Prometheus (metrics), Loki (logs) and Tempo (traces).
+#
+# The backend already scrubs customer data and credentials before exporting
+# (be/app/core/telemetry.py). transform/scrub is defence in depth: it removes the same kinds
+# of attributes again, so a future code change can't leak them into storage by accident.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  transform/scrub:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - delete_matching_keys(attributes, "(?i).*(pass(word|wd)|secret|token|authorization|cookie|e[_.-]?mail|username|display_name|url\\.query|url\\.full|url\\.path|client\\.address|user_agent).*")
+          - replace_all_patterns(attributes, "value", "[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\\.[A-Za-z0-9.-]+", "[REDACTED]")
+          - replace_all_patterns(attributes, "value", "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+", "[REDACTED]")
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message")
+          - delete_key(attributes, "exception.stacktrace")
+    log_statements:
+      - context: log
+        statements:
+          - delete_matching_keys(attributes, "(?i).*(pass(word|wd)|secret|token|authorization|cookie|e[_.-]?mail|username|display_name|url\\.query|url\\.full|client\\.address|user_agent).*")
+          - delete_key(attributes, "exception.message")
+          - delete_key(attributes, "exception.stacktrace")
+          - replace_all_patterns(attributes, "value", "[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\\.[A-Za-z0-9.-]+", "[REDACTED]")
+          - replace_all_patterns(attributes, "value", "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+", "[REDACTED]")
+          - replace_pattern(body, "[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\\.[A-Za-z0-9.-]+", "[REDACTED]")
+          - replace_pattern(body, "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+", "[REDACTED]")
+    metric_statements:
+      - context: datapoint
+        statements:
+          - delete_matching_keys(attributes, "(?i).*(pass(word|wd)|secret|token|authorization|cookie|e[_.-]?mail|username|url\\.query|url\\.full|url\\.path|client\\.address|user_agent).*")
+
+  batch: {}
+
+exporters:
+  # Prometheus native OTLP receiver (enabled with --web.enable-otlp-receiver).
+  otlphttp/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+    tls:
+      insecure: true
+  # Loki native OTLP endpoint.
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/scrub, batch]
+      exporters: [otlphttp/prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/scrub, batch]
+      exporters: [otlphttp/loki]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/scrub, batch]
+      exporters: [otlp/tempo]

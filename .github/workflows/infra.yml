@@ -70,6 +70,7 @@ jobs:
           }
           ensure_secret POSTGRES_PASSWORD
           ensure_secret JWT_SECRET
+          ensure_secret GRAFANA_ADMIN_PASSWORD   # Grafana login (user admin), see observability.md
 
           if [ -z "$ACME_EMAIL" ]; then
             echo "::error::Set the repository variable ACME_EMAIL (Let's Encrypt contact address)"

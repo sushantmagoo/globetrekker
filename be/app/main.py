@@ -9,11 +9,13 @@ from app.core.config import get_settings
 from app.core.errors import PROBLEM_JSON, install_error_handlers
 from app.core.logging import configure_logging, request_context_middleware
 from app.core.ratelimit import limiter
+from app.core.telemetry import setup_telemetry, telemetry_middleware
 from app.db.session import engine
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    setup_telemetry(engine)
     configure_logging()
 
     app = FastAPI(
@@ -22,6 +24,10 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
         docs_url=None if settings.is_production else "/api/docs",
         redoc_url=None,
+        # FastAPI's built-in OpenTelemetry records raw paths, query strings (share tokens),
+        # exception messages and rejected input values (passwords). app.core.telemetry
+        # instruments requests instead, recording only what is safe.
+        telemetry={"tracing": False, "metrics": False, "logs": False, "operation_spans": False},
     )
 
     app.state.limiter = limiter
@@ -41,6 +47,8 @@ def create_app() -> FastAPI:
         )
 
     install_error_handlers(app)
+    # Last added runs first: request id is bound before the telemetry span starts.
+    app.middleware("http")(telemetry_middleware)
     app.middleware("http")(request_context_middleware)
     if settings.cors_origin_list:
         app.add_middleware(

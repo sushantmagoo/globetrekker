@@ -196,7 +196,7 @@ npm scripts: `dev`, `build`, `preview`, `lint`, `typecheck`, `test`.
 | HTML sanitising  | `nh3` (strict allowlist; no `<img>`)                      |
 | Rate limiting    | `slowapi` with in-memory storage (see §4.4)               |
 | Background work  | Scheduled jobs via a CLI entrypoint (§4.9)                |
-| Observability    | `structlog` JSON logs, request IDs, optional Sentry, Prometheus `/metrics` |
+| Observability    | OpenTelemetry SDK (traces, metrics, logs over OTLP) → Collector → Prometheus, Loki, Tempo, Grafana; `structlog` JSON logs with trace ids and request IDs (see `observability.md`) |
 | Tests            | pytest, pytest-asyncio, httpx `AsyncClient`, testcontainers (Postgres) |
 | Lint and types   | Ruff (lint and format), mypy (strict on `app/`)           |
 | Package manager  | uv (`pyproject.toml` + `uv.lock`, `[tool.uv] package = false`) |
@@ -509,6 +509,9 @@ erDiagram
 ├── docker-compose.yml           # base: service definitions shared by every environment
 ├── docker-compose.override.yml  # local dev (auto-loaded): hot reload, ports
 ├── docker-compose.prod.yml      # prod: Caddy + TLS, restart policies; images from BACKEND_IMAGE/FRONTEND_IMAGE
+├── docker-compose.observability.yml # monitoring (local via make obs-up, and prod): Collector, Prometheus, Loki, Tempo, Grafana
+├── observability/              # Collector, Prometheus, Loki, Tempo configs; Grafana provisioning, dashboard, alert
+├── oncall-agent/               # alert webhook -> evidence -> headless coding agent (see on-call-agent.md)
 ├── Caddyfile                    # prod edge config for globetrekker.me
 ├── .env.example                 # copy to .env
 ├── Makefile                     # make test / test-integration / e2e / lint …
@@ -589,7 +592,8 @@ Four layers, all run in CI on every PR. Full strategy: [`testing.md`](testing.md
 **Done and tested**
 - Backend: config, Problem Details errors, structured logs, rate limiting, and the full schema with its first Alembic migration.
 - Backend endpoints: auth (sign-up, login, refresh rotation with reuse detection, logout, lockout), `/me`, profiles, follows, journals (draft, autosave `PATCH` with versioning, publish, unpublish, share token, delete), likes, bookmarks, comments with replies, home and Explore feeds (recent, trending, tag and country filters), notifications, the Open Graph endpoint, and health and readiness checks.
-- Backend tests: 34 unit and 28 integration tests (real Postgres 18, including a migration check).
+- Backend tests: 38 unit and 32 integration tests (real Postgres 18, including a migration check and telemetry/privacy checks).
+- Observability: the publish-a-journal journey emits metrics, traces and structured logs that share a trace id, with no customer data or credentials (two scrubbing layers). The local stack (`make obs-up`) stores them in Prometheus, Loki and Tempo, with a Grafana dashboard and a user-impact alert routed to an on-call agent that runs Claude Code to fix the issue (`on-call-agent.md`). Ships with every production release, with Grafana reachable only through an SSM tunnel (`observability.md`).
 - Frontend: layout (desktop header and mobile tab bar), sign-up and login pages, the TipTap editor (toolbar, bubble menu, video embeds, autosave with offline retry, conflict detection and local recovery, location picker, dates, tags, visibility, preview, publish), the reader (map, likes, bookmarks, share modal, comments), Home, Explore, profile, follow lists, drafts, bookmarks, notifications, settings, and light and dark themes.
 - Frontend tests: 29 Vitest tests. End-to-end: 14 Playwright tests against the Docker stack.
 - Docker: local stack (`docker compose up`) and production images build and run.

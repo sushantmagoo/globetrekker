@@ -6,8 +6,8 @@ Four layers, each catching a different class of bug. None replaces another; see
 | Layer | Tool | Runs against | Count | Time |
 | --- | --- | --- | --- | --- |
 | Frontend unit | Vitest + React Testing Library | jsdom, `fetch` mocked | 29 | ~2 s |
-| Backend unit | pytest | Pure Python: no database, no HTTP | 34 | <1 s |
-| Integration | pytest + httpx `ASGITransport` | FastAPI in-process + a real, throwaway Postgres 18 | 28 | ~5 s |
+| Backend unit | pytest | Pure Python: no database, no HTTP | 38 | <1 s |
+| Integration | pytest + httpx `ASGITransport` | FastAPI in-process + a real, throwaway Postgres 18 | 32 | ~5 s |
 | End-to-end | Playwright (Chromium, plus a Pixel 7 smoke test) | Real browser → Vite → FastAPI → Postgres, all in Docker | 14 | ~15 s |
 
 ```bash
@@ -46,6 +46,7 @@ These are pure functions with no database, network or app startup, so the whole 
 | File | What it proves |
 | --- | --- |
 | `test_content.py` | The editor JSON → HTML pipeline, the most security-sensitive code. It covers marks and headings, escaping, link schemes and `rel`, rejection of images and unknown nodes/marks, the video allow-list, excerpts and reading time. |
+| `test_telemetry.py` | Scrubbing (sensitive keys dropped; emails, JWTs and bearer tokens masked) and logs carrying the current trace and span id. |
 | `test_helpers.py` | Slugs (unicode, emoji, length), keyset cursors (round trip, garbage gives 400), Argon2 hashing, JWTs (expired, wrong type and forged tokens are rejected), opaque-token hashing, and request validation (usernames, weak passwords, tag normalisation, date order, coordinates, blank comments). |
 
 ## Integration tests
@@ -63,6 +64,7 @@ The schema is created by running the real Alembic migrations, not `create_all`. 
 | `test_auth.py` | Sign-up and duplicate detection, the CSRF header requirement, wrong passwords and the 10-attempt lockout, refresh-token rotation with its reuse grace window, logout revoking the session, profile and password changes, account deletion. |
 | `test_journals.py` | Draft lifecycle and slugs, optimistic concurrency (409), rejected images, publish validation, slugs frozen after publish, ownership checks, **the full visibility matrix** (public, followers, unlisted with and without token, private) for visitors, followers, strangers and owners, share-token rotation, unpublish and delete, and Open Graph HTML escaping. |
 | `test_social.py` | Follows and counters, notifications (incl. like coalescing), likes and bookmarks, comments with replies and cascading deletes, the home feed, Explore pagination and filters, and deleted authors disappearing. |
+| `test_telemetry.py` | The publish journey's spans (route templates, journey tags, SQL and render children), metrics (per-step counts, latency exemplars, published-by-visibility) and logs all share each request's trace id. Failed steps (409, 422, 500) are counted and logged; a 500 records the exception type but not its message. **Privacy:** after the whole journey, login and refresh, no password, email, username, token, cookie, title, text or slug appears in any exported signal. |
 | `test_migrations.py` | Migrations run upgrade → downgrade → upgrade on an **empty** database, and `alembic check` finds no drift between the migrations and the models. |
 
 This layer catches what unit tests can't, because only Postgres behaves like Postgres:
@@ -97,6 +99,14 @@ Design notes:
 - **Rate limits.** Sign-up is limited to 3 per hour per IP in production, so the e2e stack runs with `RATE_LIMIT_ENABLED=false`. That setting is never used in production.
 - **Stability check.** The suite passed 42 of 42 runs with `--repeat-each=3` before it was committed. CI retries a failed test once and uploads the HTML report and traces.
 - **It already found a bug.** Under parallel load, the profile's Follow button sometimes kept its loading spinner after the follow had succeeded (4 of 12 runs). Follow and Following were the same antd button with changing props, so the old spinner's exit animation lingered. Giving each state its own `key` fixed it (12 of 12 runs).
+
+## On-call agent
+
+`oncall-agent/tests`, run with `make test-oncall-agent` (12 tests, also a CI job). They use fake Prometheus, Loki and Tempo and a stand-in for the coding agent, and cover incident creation, evidence collection, deduplication and resolution, test alerts, backends being down, and the locked-down agent command. The end-to-end drill with real Claude Code is described in [`on-call-agent.md`](on-call-agent.md#10-testing).
+
+## Observability check
+
+`make obs-verify` (after `make obs-up`) runs the journey against the real stack. It then queries Tempo, Loki and Prometheus to check that each step stored a trace, logs and metrics with matching trace ids, and that none of the user's secrets reached storage. See [`observability.md`](observability.md).
 
 ## Why four layers
 

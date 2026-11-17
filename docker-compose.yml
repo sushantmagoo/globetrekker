@@ -1,6 +1,10 @@
-# Globetrekker: base service definitions shared by every environment.
-#   Local: docker compose up --build                (auto-merges docker-compose.override.yml)
-#   Prod:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Globetrekker: base service definitions shared by every environment. Never used on its own.
+#
+#   Local:            docker compose up --build   (auto-merges docker-compose.override.yml)
+#   Local + monitoring: make obs-up               (+ docker-compose.observability.yml)
+#   Prod (EC2):       deploy/remote-deploy.sh runs
+#                     docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#                                    -f docker-compose.observability.yml up -d --no-build
 # No ports are published here; each environment file decides what to expose.
 
 name: globetrekker

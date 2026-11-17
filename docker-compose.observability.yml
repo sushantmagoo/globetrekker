@@ -1,0 +1,138 @@
+# Monitoring: OpenTelemetry Collector -> Prometheus / Loki / Tempo -> Grafana.
+# Used in BOTH environments, always as the last file:
+#   Local: make obs-up
+#          (docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.observability.yml)
+#   Prod:  deploy/remote-deploy.sh
+#          (docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.observability.yml)
+#
+# Secure by default (these defaults are what production gets):
+# - Every port binds to 127.0.0.1 only. On EC2 nothing here is reachable from the internet
+#   (the security group only opens 80/443 to Caddy); reach Grafana with SSM port forwarding.
+# - Grafana requires a login: user `admin`, password GRAFANA_ADMIN_PASSWORD (required).
+#   `make obs-up` sets GRAFANA_ANONYMOUS=true for passwordless local use.
+# - The backend never waits on monitoring: if the Collector is down, the app still starts
+#   and telemetry is simply dropped.
+# - Memory limits keep a monitoring spike from starving the app.
+#   The Collector's memory_limiter works off its own limit.
+
+x-monitoring: &monitoring
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  backend:
+    environment:
+      OTEL_SERVICE_NAME: globetrekker-backend
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      # Metric export interval in ms (SDK default is 60000).
+      OTEL_METRIC_EXPORT_INTERVAL: ${OTEL_METRIC_EXPORT_INTERVAL:-15000}
+      # "true" also prints every signal to `docker compose logs backend` (debugging only).
+      OTEL_CONSOLE_EXPORT: ${OTEL_CONSOLE_EXPORT:-false}
+    depends_on:
+      otel-collector:
+        condition: service_started
+        required: false   # monitoring must never stop the app from starting
+
+  otel-collector:
+    <<: *monitoring
+    image: otel/opentelemetry-collector-contrib:0.131.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:${OTEL_GRPC_PORT:-4317}:4317"
+      - "127.0.0.1:${OTEL_HTTP_PORT:-4318}:4318"
+    mem_limit: 192m
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+
+  prometheus:
+    <<: *monitoring
+    image: prom/prometheus:v3.13.5
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${METRICS_RETENTION:-7d}
+      # Hard cap so metrics can never fill the data volume shared with Postgres.
+      - --storage.tsdb.retention.size=${METRICS_RETENTION_SIZE:-2GB}
+      - --web.enable-otlp-receiver
+      # Keep the trace ids attached to histogram samples (latency -> trace links).
+      - --enable-feature=exemplar-storage
+      # Insert a 0 sample at each OTLP counter's start time, so increase()/rate()
+      # count the first requests after a backend restart.
+      - --enable-feature=created-timestamp-zero-ingestion
+    volumes:
+      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    mem_limit: 384m
+
+  loki:
+    <<: *monitoring
+    image: grafana/loki:3.5.3
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./observability/loki.yaml:/etc/loki/config.yaml:ro
+      - loki:/loki
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
+    mem_limit: 384m
+
+  tempo:
+    <<: *monitoring
+    image: grafana/tempo:2.8.2
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo/config.yaml:ro
+      - tempo:/var/tempo
+    ports:
+      - "127.0.0.1:${TEMPO_PORT:-3200}:3200"
+    mem_limit: 384m
+
+  grafana:
+    <<: *monitoring
+    image: grafana/grafana:12.1.1
+    environment:
+      # Production default: login required. `make obs-up` sets GRAFANA_ANONYMOUS=true.
+      GF_AUTH_ANONYMOUS_ENABLED: ${GRAFANA_ANONYMOUS:-false}
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: ${GRAFANA_ANONYMOUS:-false}
+      # Only applied when Grafana's database is first created (see _docs/observability.md
+      # to change it later).
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD (SSM parameter in prod)}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/globetrekker.json
+      # Links in alerts. In prod Grafana is reached through an SSM tunnel on this same port.
+      GF_SERVER_ROOT_URL: http://127.0.0.1:${GRAFANA_PORT:-3000}/
+      # Where alerts are sent: the on-call agent on the host (oncall-agent/, port 8001).
+      ONCALL_WEBHOOK_URL: ${ONCALL_WEBHOOK_URL:-http://host.docker.internal:8001/alerts}
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    mem_limit: 384m
+    # Lets Grafana reach the on-call agent running on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+
+volumes:
+  prometheus:
+  loki:
+  tempo:
+  grafana:

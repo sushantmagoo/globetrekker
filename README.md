@@ -46,6 +46,31 @@ Strategy and coverage: [`_docs/testing.md`](_docs/testing.md).
 
 New migration: `cd be && uv run alembic revision --autogenerate -m "describe change"`
 
+## Observability
+
+`make obs-up` starts the app plus an OpenTelemetry Collector, Prometheus, Loki, Tempo and
+Grafana (<http://127.0.0.1:3000>). The "write and publish a journal" journey has metrics, traces
+and logs that share a trace id, with no customer data or credentials in any of them.
+`make obs-verify` proves it against the running stack. See
+[`_docs/observability.md`](_docs/observability.md).
+
+### Alerting and the on-call agent
+
+A user-impact alert ("Users failing to write or publish journals": over 5% of a journey step's
+requests failing) is sent to an on-call agent (`make oncall-agent`). The agent collects metrics,
+logs and traces, then runs Claude Code headless to fix the bug, add a regression test and write
+a report for a person to review. See [`_docs/on-call-agent.md`](_docs/on-call-agent.md).
+
+### Which compose files are used where
+
+| Where | Files |
+| --- | --- |
+| Local (`docker compose up`, `make up`) | `docker-compose.yml` + `docker-compose.override.yml` (auto-loaded) |
+| Local with monitoring (`make obs-up`) | the two above + `docker-compose.observability.yml` |
+| Production (EC2, via `deploy/remote-deploy.sh`) | `docker-compose.yml` + `docker-compose.prod.yml` + `docker-compose.observability.yml` |
+
+`docker-compose.override.yml` is dev-only and never used in production.
+
 ## Deployment (AWS)
 
 - **Infrastructure** (VPC, EC2, ECR, IAM) is created and updated by GitHub Actions (`.github/workflows/infra.yml`) from `infra/cloudformation/app.yaml`.
@@ -62,6 +87,8 @@ New migration: `cd be && uv run alembic revision --autogenerate -m "describe cha
 | [`_docs/spec.md`](_docs/spec.md) | Product and technical spec |
 | [`_docs/tasks.md`](_docs/tasks.md) | Improvement backlog (mirrored as GitHub issues) |
 | [`_docs/testing.md`](_docs/testing.md) | Test strategy: unit, integration, e2e |
+| [`_docs/observability.md`](_docs/observability.md) | Metrics, traces and logs; dashboard; privacy rules |
+| [`_docs/on-call-agent.md`](_docs/on-call-agent.md) | User-impact alert and the agent that fixes issues |
 | [`_docs/deployment.md`](_docs/deployment.md) | AWS deployment and infrastructure |
 | [`_docs/release-process.md`](_docs/release-process.md) | How changes ship and roll back |
 | [`_docs/pm.md`](_docs/pm.md), [`se.md`](_docs/se.md), [`qa.md`](_docs/qa.md) | Team roles |

@@ -1,16 +1,21 @@
 import uuid
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Query, Response, status
 
 from app.api.deps import CurrentUser, OptionalUser, SessionDep
 from app.core.errors import not_found
+from app.core.telemetry import JOURNEY, journals_published, set_span_attributes
 from app.models import Journal, JournalStatus, User
 from app.schemas import JournalCreatedOut, JournalDetail, JournalEditOut, JournalUpdateIn
 from app.services import journals as journal_service
 from app.services.visibility import can_view
 
 router = APIRouter(prefix="/journals", tags=["journals"])
+
+# Journey events carry `journey` so Grafana can show them next to the request logs.
+log = structlog.get_logger(journey=JOURNEY)
 
 ShareToken = Annotated[str | None, Query(alias="t", max_length=64)]
 
@@ -38,6 +43,10 @@ async def load_published_visible(
 async def create_journal(user: CurrentUser, session: SessionDep) -> JournalCreatedOut:
     journal = await journal_service.create_draft(session, user)
     await session.commit()
+    set_span_attributes(
+        {"journal.id": str(journal.id), "journal.visibility": journal.visibility.value}
+    )
+    log.info("journal draft created", journal_id=str(journal.id))
     return JournalCreatedOut.model_validate(journal)
 
 
@@ -46,6 +55,14 @@ async def read_journal(
     slug: str, viewer: OptionalUser, session: SessionDep, response: Response, t: ShareToken = None
 ) -> JournalDetail:
     journal = await journal_service.get_by_slug(session, slug)
+    set_span_attributes(
+        {
+            "journal.id": str(journal.id),
+            "journal.visibility": journal.visibility.value,
+            "journal.access": "share_link" if t else "direct",
+            "viewer.signed_in": viewer is not None,
+        }
+    )
     if not await can_view(session, journal, viewer, t):
         raise not_found("Journal")
     if journal.visibility.value != "public" or journal.status != JournalStatus.published:
@@ -66,9 +83,19 @@ async def get_for_edit(
 async def update_journal(
     journal_id: uuid.UUID, data: JournalUpdateIn, user: CurrentUser, session: SessionDep
 ) -> JournalEditOut:
+    set_span_attributes({"journal.id": str(journal_id)})
     journal = await journal_service.get_owned(session, journal_id, user, lock=True)
     await journal_service.update_journal(session, journal, data)
     await session.commit()
+    set_span_attributes(
+        {"journal.version": journal.version, "journal.word_count": journal.word_count}
+    )
+    log.info(
+        "journal autosaved",
+        journal_id=str(journal.id),
+        version=journal.version,
+        word_count=journal.word_count,
+    )
     return journal_service.to_edit(journal)
 
 
@@ -76,9 +103,24 @@ async def update_journal(
 async def publish_journal(
     journal_id: uuid.UUID, user: CurrentUser, session: SessionDep
 ) -> JournalEditOut:
+    set_span_attributes({"journal.id": str(journal_id)})
     journal = await journal_service.get_owned(session, journal_id, user, lock=True)
+    first_publish = journal.status != JournalStatus.published
     await journal_service.publish(session, journal, user)
     await session.commit()
+    visibility = journal.visibility.value
+    set_span_attributes(
+        {"journal.visibility": visibility, "journal.word_count": journal.word_count}
+    )
+    if first_publish:
+        journals_published.add(1, {"journal.visibility": visibility})
+    log.info(
+        "journal published",
+        journal_id=str(journal.id),
+        visibility=visibility,
+        word_count=journal.word_count,
+        first_publish=first_publish,
+    )
     return journal_service.to_edit(journal)
 
 

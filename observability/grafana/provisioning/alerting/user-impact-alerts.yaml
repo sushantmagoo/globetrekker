@@ -1,0 +1,111 @@
+# Grafana-managed alert rules, provisioned at startup.
+#
+# Alerting on USER IMPACT: the rule fires on the share of users' requests in the
+# "write and publish a journal" journey that fail, not on raw error counts or on causes
+# (CPU, a crashed container, one stray exception). One failure among hundreds of successes is
+# noise; 1 in 20 users unable to save or publish their journal is an incident.
+#
+# SLI (per journey step): requests that did NOT fail with a 5xx / all requests.
+#   4xx (validation, conflicts, not found) are the user's own mistakes, not our failures.
+# SLO: 99% of journey requests succeed.
+# Fires when, over the last 5 minutes, for any step (create_draft, autosave, publish, read):
+#   failure ratio > 5%            (5x the error budget: users are clearly affected)
+#   AND failed requests >= 3      (minimum impact, so one unlucky request on a quiet site
+#                                  doesn't page anyone)
+# for 1 minute (pending period). No traffic means Normal.
+#
+# Notifications go to the on-call agent (on-call-agent.yaml in this folder).
+# Alert provisioning files are not env-expanded, so dashboard_url uses the default port.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: user-impact
+    folder: Globetrekker
+    interval: 30s
+    rules:
+      - uid: publish-journey-user-impact
+        title: Users failing to write or publish journals
+        condition: E
+        data:
+          # A: failure ratio per step. The "or ... * 0" branch gives steps with traffic but
+          # no failures a real 0 (Normal) instead of no data.
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: >-
+                (
+                  sum by (journey_step) (increase(journey_step_requests_total{job="globetrekker-backend", outcome="server_error"}[5m]))
+                  or
+                  sum by (journey_step) (increase(journey_step_requests_total{job="globetrekker-backend"}[5m])) * 0
+                )
+                /
+                sum by (journey_step) (increase(journey_step_requests_total{job="globetrekker-backend"}[5m]))
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+          # B: failed requests per step (how many users were hit).
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: B
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: >-
+                sum by (journey_step) (increase(journey_step_requests_total{job="globetrekker-backend", outcome="server_error"}[5m]))
+                or
+                sum by (journey_step) (increase(journey_step_requests_total{job="globetrekker-backend"}[5m])) * 0
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model: { refId: C, type: reduce, expression: A, reducer: last, settings: { mode: dropNN } }
+          - refId: D
+            datasourceUid: __expr__
+            model: { refId: D, type: reduce, expression: B, reducer: last, settings: { mode: dropNN } }
+          # E: user impact = high failure ratio AND enough affected requests.
+          - refId: E
+            datasourceUid: __expr__
+            model:
+              refId: E
+              type: math
+              expression: "$C > 0.05 && $D >= 3"
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        labels:
+          severity: critical
+          service: globetrekker-backend
+          journey: publish_journal
+          slo: publish-journal-availability
+        annotations:
+          summary: >-
+            {{ with $values.C }}{{ humanizePercentage .Value }}{{ end }} of "{{ $labels.journey_step }}" requests are failing
+          description: >-
+            Users are affected: {{ with $values.D }}{{ printf "%.0f" .Value }}{{ end }} request(s) to the
+            "{{ $labels.journey_step }}" step of the write-and-publish-a-journal journey failed
+            with a server error in the last 5 minutes
+            ({{ with $values.C }}{{ humanizePercentage .Value }}{{ end }} of attempts; the SLO allows 1%).
+          impact: >-
+            {{ with $values.D }}{{ printf "%.0f" .Value }}{{ end }} failed {{ $labels.journey_step }} request(s) in 5m
+            ({{ with $values.C }}{{ humanizePercentage .Value }}{{ end }})
+          journey_step: "{{ $labels.journey_step }}"
+          time_window: 5m
+          runbook_url: "_docs/on-call-agent.md"
+          dashboard_url: "http://127.0.0.1:3000/d/globetrekker-publish-journey/globetrekker-publish-a-journal?orgId=1&from=now-1h&to=now&var-step={{ $labels.journey_step }}"
+          __dashboardUid__: globetrekker-publish-journey
+          __panelId__: "9"
+
+# Replaced by the user-impact rule above (it fired on any single 5xx). Grafana keeps
+# provisioned rules in its database, so removal has to be explicit.
+deleteRules:
+  - orgId: 1
+    uid: publish-journey-5xx

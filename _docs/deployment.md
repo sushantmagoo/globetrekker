@@ -36,7 +36,7 @@ flowchart LR
     CI -- "release bundle" --> S3[(S3 releases bucket)]
     CI -- "ssm send-command" --> EC2
     subgraph VPC
-        EC2[EC2 t3.small<br/>Caddy · frontend · backend · Postgres]
+        EC2[EC2, t3.medium recommended<br/>Caddy · frontend · backend · Postgres<br/>+ monitoring: Collector · Prometheus · Loki · Tempo · Grafana]
         EBS[(encrypted EBS<br/>/data)]
         EC2 --- EBS
     end
@@ -68,6 +68,7 @@ Production secrets live in **SSM Parameter Store** under `/globetrekker/prod/`:
 | `POSTGRES_PASSWORD` (SecureString) | `infra.yml`, generated with `openssl rand` on first run | Never rotated automatically: changing it would lock the app out of its existing database. |
 | `JWT_SECRET` (SecureString) | `infra.yml`, generated on first run | Rotating it logs everyone out. |
 | `ACME_EMAIL` | `infra.yml`, from the repo variable `ACME_EMAIL` | Let's Encrypt contact address. |
+| `GRAFANA_ADMIN_PASSWORD` (SecureString) | `infra.yml`, generated on first run | Grafana login for user `admin`. Only applied when Grafana's database is first created; see [`observability.md`](observability.md) to change it later. |
 
 Secret values never appear in GitHub (not in secrets, logs or SSM command text). On each deploy the instance reads them
 itself and writes a `chmod 600` `.env` file next to the release.
@@ -76,11 +77,11 @@ itself and writes a `chmod 600` `.env` file next to the release.
 
 1. **Tests:** unit, integration and e2e (see [`testing.md`](testing.md)).
 2. **Images:** CI builds the `prod` targets of `be/` and `fe/` and pushes them to ECR, tagged with the commit SHA. The images that ship are exactly the ones CI built, so the instance never builds code.
-3. **Bundle:** CI uploads `docker-compose.yml`, `docker-compose.prod.yml`, `Caddyfile` and `deploy/remote-deploy.sh` to `s3://…/releases/<sha>.tar.gz`.
+3. **Bundle:** CI uploads `docker-compose.yml`, `docker-compose.prod.yml`, `docker-compose.observability.yml`, the `observability/` configs, `Caddyfile` and `deploy/remote-deploy.sh` to `s3://…/releases/<sha>.tar.gz`.
 4. **SSM Run Command:** the instance downloads the bundle into `/opt/globetrekker/releases/<sha>` and runs [`deploy/remote-deploy.sh`](../deploy/remote-deploy.sh), which:
    - writes `.env` from Parameter Store, with `BACKEND_IMAGE` and `FRONTEND_IMAGE` pinned to `<sha>`;
    - logs in to ECR with the instance role and pulls the images;
-   - runs `docker compose up -d --no-build`, so the `migrate` service applies Alembic migrations **before** the backend starts;
+   - runs `docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.observability.yml up -d --no-build`, so the `migrate` service applies Alembic migrations **before** the backend starts, and the monitoring stack starts alongside (it never blocks the backend);
    - waits up to 5 minutes for the backend health check and a clean `migrate` exit;
    - **on success**, points `/opt/globetrekker/current` at the release, keeps the 5 newest releases on disk and prunes unused images;
    - **on failure**, prints the logs, **restarts the previous release automatically**, and exits non-zero so the GitHub job fails.
@@ -142,7 +143,7 @@ You need the AWS CLI with **admin credentials** (only for step 1) and `gh`.
    gh api -X PUT repos/$R/environments/production >/dev/null
    ```
    Optional variables:
-   - `INSTANCE_TYPE` (default `t3.small`)
+   - `INSTANCE_TYPE` (default `t3.small`). **Set it to `t3.medium` when deploying with monitoring.** The monitoring containers use about 0.9 GB, on top of Postgres, 4 API workers and Caddy, which leaves almost nothing free on a 2 GB t3.small.
    - `DATA_VOLUME_SIZE` (default 20)
    - `APP_URL` (e.g. `https://globetrekker.me`). Set it once DNS works, to turn on the public health check.
 
@@ -162,9 +163,25 @@ ID=$(aws cloudformation describe-stacks --stack-name globetrekker-app \
 aws ssm start-session --target "$ID"          # shell, no SSH needed
 # on the instance:
 cat /opt/globetrekker/CURRENT_RELEASE
-cd /opt/globetrekker/current && sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml ps
-sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml logs -f backend
+cd /opt/globetrekker/current
+alias dc='sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.observability.yml'
+dc ps
+dc logs -f backend
 ```
+
+### Grafana (monitoring)
+
+Grafana is not exposed to the internet: it binds to `127.0.0.1:3000` on the instance and the security group only opens 80/443. Reach it through an SSM tunnel from your machine:
+
+```bash
+aws ssm start-session --target "$ID" --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["3000"],"localPortNumber":["3000"]}'
+# then open http://127.0.0.1:3000 and log in as admin with:
+aws ssm get-parameter --name /globetrekker/prod/GRAFANA_ADMIN_PASSWORD --with-decryption \
+  --query Parameter.Value --output text
+```
+
+The port-forwarding plugin for the AWS CLI must be installed (`session-manager-plugin`). See [`observability.md`](observability.md) for what's on the dashboard.
 
 ## What this does not do (yet)
 

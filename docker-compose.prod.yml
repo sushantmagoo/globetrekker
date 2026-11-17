@@ -1,6 +1,8 @@
 # Production overrides for https://globetrekker.me
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-# Only Caddy publishes ports (80/443). Everything else stays on the internal network.
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.observability.yml up -d
+#   (deploy/remote-deploy.sh does this on EC2; `make build-prod` builds the images locally)
+# Only Caddy publishes public ports (80/443). Monitoring binds to 127.0.0.1 (see
+# docker-compose.observability.yml); everything else stays on the internal network.
 #
 # Images: by default they're built locally and tagged `:prod`. On EC2, CI sets BACKEND_IMAGE /
 # FRONTEND_IMAGE to the ECR images it built and tested, and runs `up --no-build` (see deploy/).

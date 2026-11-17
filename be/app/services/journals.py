@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
+import structlog
 from sqlalchemy import Select, delete, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.content.render import ContentError, render_document
 from app.core.errors import ProblemError, bad_request, conflict, not_found
+from app.core.telemetry import JOURNEY, tracer
 from app.models import (
     Bookmark,
     Journal,
@@ -25,6 +27,9 @@ from app.models import (
     journal_tags,
 )
 from app.schemas import JournalCard, JournalDetail, JournalEditOut, JournalUpdateIn, UserSummary
+
+# Journey events carry `journey` so Grafana can show them next to the request logs.
+log = structlog.get_logger(journey=JOURNEY)
 
 BASE62 = string.ascii_letters + string.digits
 SLUG_SUFFIX_LEN = 6
@@ -248,6 +253,12 @@ async def _set_tags(session: AsyncSession, journal: Journal, names: list[str]) -
 
 async def update_journal(session: AsyncSession, journal: Journal, data: JournalUpdateIn) -> Journal:
     if data.version != journal.version:
+        log.warning(
+            "journal autosave conflict",
+            journal_id=str(journal.id),
+            client_version=data.version,
+            server_version=journal.version,
+        )
         raise conflict("This journal was changed elsewhere. Reload to get the latest version.")
     fields = data.model_fields_set
 
@@ -259,15 +270,25 @@ async def update_journal(session: AsyncSession, journal: Journal, data: JournalU
     if "subtitle" in fields:
         journal.subtitle = (data.subtitle or "").strip() or None
     if "content_json" in fields and data.content_json is not None:
-        try:
-            rendered = render_document(data.content_json)
-        except ContentError as exc:
-            raise ProblemError(
-                422,
-                "Validation Error",
-                str(exc),
-                errors=[{"field": "content_json", "message": str(exc)}],
-            ) from exc
+        with tracer.start_as_current_span("journal.render") as span:
+            try:
+                rendered = render_document(data.content_json)
+            except ContentError as exc:
+                # The reason is safe to log (node/mark names), the content is not.
+                log.warning("journal content rejected", journal_id=str(journal.id))
+                span.set_attribute("journal.render.rejected", True)
+                raise ProblemError(
+                    422,
+                    "Validation Error",
+                    str(exc),
+                    errors=[{"field": "content_json", "message": str(exc)}],
+                ) from exc
+            span.set_attributes(
+                {
+                    "journal.word_count": rendered.word_count,
+                    "journal.reading_minutes": rendered.reading_minutes,
+                }
+            )
         journal.content_json = data.content_json
         journal.content_html = rendered.html
         journal.content_text = rendered.text
@@ -305,6 +326,11 @@ async def publish(session: AsyncSession, journal: Journal, author: User) -> Jour
     if journal.word_count == 0:
         errors.append({"field": "content_json", "message": "Write something before publishing"})
     if errors:
+        log.warning(
+            "journal publish rejected",
+            journal_id=str(journal.id),
+            missing=",".join(e["field"] for e in errors),
+        )
         raise ProblemError(422, "Validation Error", "This journal isn't ready yet", errors=errors)
     if journal.status != JournalStatus.published:
         journal.status = JournalStatus.published

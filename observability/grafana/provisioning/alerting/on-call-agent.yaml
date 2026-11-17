@@ -1,0 +1,25 @@
+# Send every Grafana alert to the on-call agent (oncall-agent/, runs on the host at port 8001).
+# Grafana reaches the host via host.docker.internal (see docker-compose.observability.yml).
+# The URL can be changed with ONCALL_WEBHOOK_URL. If nothing listens there (e.g. on EC2,
+# where the agent doesn't run), Grafana logs a failed delivery; the alert itself still shows
+# in Grafana -> Alerting.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: on-call-agent
+    receivers:
+      - uid: on-call-agent-webhook
+        type: webhook
+        settings:
+          url: ${ONCALL_WEBHOOK_URL}
+          httpMethod: POST
+        disableResolveMessage: false
+
+policies:
+  - orgId: 1
+    receiver: on-call-agent
+    group_by: ["grafana_folder", "alertname", "journey_step"]
+    group_wait: 10s
+    group_interval: 1m
+    repeat_interval: 4h

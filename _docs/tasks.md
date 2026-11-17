@@ -19,7 +19,7 @@ Check items off as they land.
   - [ ] Cache Explore/trending and popular tags
   - [ ] Background job queue (e.g. `arq`) instead of in-process tasks
 - [ ] **Backups.** Nightly `pg_dump` to off-site storage, plus a monthly restore test.
-- [ ] **Monitoring.** Error tracking (Sentry), uptime checks, and basic metrics and dashboards.
+- [ ] **Monitoring.** Error tracking (Sentry), uptime checks, and basic metrics and dashboards. *Partly done:* OpenTelemetry metrics, traces and logs with a local Grafana stack for the publish journey (`observability.md`). A user-impact alert and an on-call agent are done (`on-call-agent.md`). Still needed: human paging, browser tracing and uptime checks.
 - [x] **CI/CD.** GitHub Actions to lint, test and build images, then deploy to the server. (#6, done: `ci-cd.yml`, `infra.yml`, see `deployment.md`; first real AWS run still pending)
 - [ ] **Connection pooling.** Add PgBouncer once traffic grows.
 

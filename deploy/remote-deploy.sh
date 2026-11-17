@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Runs ON the EC2 instance (via SSM Run Command from .github/workflows/ci-cd.yml).
 #
-# The release bundle (docker-compose files, Caddyfile, this script) has already been
+# The release bundle (docker-compose files, observability/ configs, Caddyfile, this script) has already been
 # extracted to /opt/globetrekker/releases/<sha>. This script:
 #   1. writes the release's .env from SSM Parameter Store (secrets never touch GitHub logs),
 #   2. pulls the backend/frontend images CI built and tested for <sha> from ECR,
-#   3. starts the stack (migrations run first, via the `migrate` service),
+#   3. starts the stack, including monitoring (migrations run first, via the `migrate` service),
 #   4. waits for the backend to report healthy,
 #   5. on success points /opt/globetrekker/current at this release;
 #      on failure restarts the previous release and exits non-zero.
@@ -26,8 +26,13 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-300}"
 
 log() { printf '[deploy %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
+# Files and order: base, prod, then monitoring (last, so its backend OTEL_* settings apply).
+# Releases bundled before monitoring existed have no observability file; rolling back to one
+# simply runs without monitoring.
 compose() {
-  docker compose --env-file "$1/.env" -f "$1/docker-compose.yml" -f "$1/docker-compose.prod.yml" "${@:2}"
+  local files=(-f "$1/docker-compose.yml" -f "$1/docker-compose.prod.yml")
+  [ -f "$1/docker-compose.observability.yml" ] && files+=(-f "$1/docker-compose.observability.yml")
+  docker compose --env-file "$1/.env" "${files[@]}" "${@:2}"
 }
 
 write_env() {
@@ -43,7 +48,9 @@ write_env() {
     printf 'BACKEND_IMAGE=%s/globetrekker-backend:%s\n' "$ECR_REGISTRY" "$sha"
     printf 'FRONTEND_IMAGE=%s/globetrekker-frontend:%s\n' "$ECR_REGISTRY" "$sha"
   } >"$dir/.env"
-  for required in POSTGRES_PASSWORD JWT_SECRET ACME_EMAIL; do
+  local required_params=(POSTGRES_PASSWORD JWT_SECRET ACME_EMAIL)
+  [ -f "$dir/docker-compose.observability.yml" ] && required_params+=(GRAFANA_ADMIN_PASSWORD)
+  for required in "${required_params[@]}"; do
     grep -q "^${required}=" "$dir/.env" || { log "Missing SSM parameter $SSM_PREFIX/$required"; exit 1; }
   done
 }

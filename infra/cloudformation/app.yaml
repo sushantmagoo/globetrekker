@@ -19,7 +19,7 @@ Parameters:
     Type: String
     Default: t3.small
     AllowedValues: [t3.micro, t3.small, t3.medium, t3.large]
-    Description: t3.small (2 GB) is comfortable for Postgres + API + Caddy; images are built in CI, not on the box.
+    Description: t3.small (2 GB) fits Postgres + API + Caddy alone. With the monitoring stack (about 0.9 GB more) use t3.medium (4 GB). Images are built in CI, not on the box.
   DataVolumeSize:
     Type: Number
     Default: 20
